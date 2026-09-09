@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TRUTH INFORMER: ROGUE DROP</title>
+<style>
+  html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#070b12;font-family:Arial,sans-serif}
+  canvas{display:block;width:100vw;height:100vh;cursor:crosshair}
+  #hud{position:fixed;left:18px;top:16px;color:white;z-index:3;text-shadow:0 2px 3px #000;pointer-events:none}
+  .bar{width:220px;height:18px;background:#32151a;border:2px solid #fff;border-radius:5px;overflow:hidden}
+  #hp{height:100%;width:100%;background:#27e36b}
+  #info{margin-top:7px;font-size:16px}
+  #help{position:fixed;bottom:15px;left:50%;transform:translateX(-50%);color:#ddd;background:#0009;padding:9px 14px;border-radius:8px;font-size:14px;z-index:3;text-align:center}
+  #start,#gameover{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;color:white;background:#050811dd;z-index:5;text-align:center}
+  #gameover{display:none}
+  h1{font-size:52px;margin:0 0 8px;letter-spacing:3px}
+  button{font-size:20px;padding:12px 28px;border:0;border-radius:8px;background:#2f8cff;color:#fff;cursor:pointer}
+  button:hover{background:#57a5ff}
+  .small{color:#aaa;margin:10px}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <b>TRUTH INFORMER</b>
+  <div class="bar"><div id="hp"></div></div>
+  <div id="info">Score: 0 | Wave: 1 | Enemies: 0</div>
+</div>
+
+<div id="help">WASD = move • Mouse = aim/shoot • Shift = sprint • R = reload • 1/2 = weapons</div>
+
+<div id="start">
+  <h1>TRUTH INFORMER</h1>
+  <div class="small">You are the Truth Informer. Stop the Rogue Helldivers and expose the truth.</div>
+  <button id="startBtn">PLAY</button>
+</div>
+
+<div id="gameover">
+  <h1>TRUTH LOST</h1>
+  <div id="finalScore" class="small"></div>
+  <button id="restartBtn">PLAY AGAIN</button>
+</div>
+
+<script>
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");
+const hpBar=document.getElementById("hp"),info=document.getElementById("info");
+let W,H,dpr;
+
+function resize(){
+  dpr=Math.min(devicePixelRatio||1,2);
+  W=innerWidth;H=innerHeight;
+  canvas.width=W*dpr;canvas.height=H*dpr;
+  canvas.style.width=W+"px";canvas.style.height=H+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener("resize",resize); resize();
+
+const keys={};
+let mouse={x:W/2,y:H/2,down:false};
+addEventListener("keydown",e=>{keys[e.key.toLowerCase()]=true;if(e.key.toLowerCase()==="r"&&!running)startGame()});
+addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+canvas.addEventListener("mousemove",e=>{mouse.x=e.clientX;mouse.y=e.clientY});
+canvas.addEventListener("mousedown",()=>mouse.down=true);
+addEventListener("mouseup",()=>mouse.down=false);
+document.getElementById("startBtn").onclick=startGame;
+document.getElementById("restartBtn").onclick=startGame;
+
+let running=false,score=0,wave=1,last=0,spawnTimer=0,shootTimer=0,reloadTimer=0;
+let player,enemies=[],bullets=[],enemyBullets=[],particles=[],cover=[],pickups=[];
+let cameraZoom=1;
+
+function startGame(){
+  score=0;wave=1;spawnTimer=0;shootTimer=0;
+  player={x:0,y:0,angle:0,hp:100,r:20,speed:3.2,ammo:30,maxAmmo:30,weapon:0};
+  enemies=[];bullets=[];enemyBullets=[];particles=[];cover=[];pickups=[];
+  for(let i=0;i<28;i++){
+    cover.push({x:(Math.random()-.5)*2600,y:(Math.random()-.5)*1800,w:70+Math.random()*100,h:45+Math.random()*70});
+  }
+  running=true;
+  document.getElementById("start").style.display="none";
+  document.getElementById("gameover").style.display="none";
+  requestAnimationFrame(loop);
+}
+
+function spawnEnemy(){
+  const a=Math.random()*Math.PI*2;
+  const dist=500+Math.random()*450;
+  const type=Math.random();
+  enemies.push({
+    x:player.x+Math.cos(a)*dist,
+    y:player.y+Math.sin(a)*dist,
+    r:18,
+    hp:type<.18?3:2,
+    speed:(type<.18?1.0:1.35)+wave*.035,
+    cooldown:Math.random()*1.5,
+    elite:type<.18
+  });
+}
+
+function shoot(){
+  if(shootTimer>0 || reloadTimer>0)return;
+  if(player.ammo<=0){reload();return}
+  shootTimer=player.weapon===0?.12:.28;
+  player.ammo--;
+  const spread=player.weapon===0?.035:.01;
+  const dx=mouse.x-W/2,dy=mouse.y-H/2;
+  const len=Math.hypot(dx,dy)||1;
+  const angle=Math.atan2(dy,dx)+(Math.random()-.5)*spread;
+  const speed=player.weapon===0?13:17;
+  bullets.push({x:player.x+Math.cos(angle)*25,y:player.y+Math.sin(angle)*25,
+    vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,life:1.1});
+  muzzleFlash=0.06;
+  for(let i=0;i<4;i++)particle(player.x+Math.cos(angle)*28,player.y+Math.sin(angle)*28,"#ffe28a");
+}
+
+let muzzleFlash=0;
+function reload(){
+  if(reloadTimer<=0 && player.ammo<player.maxAmmo) reloadTimer=1.0;
+}
+function particle(x,y,color){
+  particles.push({x,y,vx:(Math.random()-.5)*4,vy:(Math.random()-.5)*4,life:.4,color});
+}
+
+function enemyShoot(e){
+  const a=Math.atan2(player.y-e.y,player.x-e.x);
+  enemyBullets.push({x:e.x,y:e.y,vx:Math.cos(a)*5,vy:Math.sin(a)*5,life:3});
+}
+
+function update(dt){
+  if(keys.r) reload();
+  if(keys["1"]) player.weapon=0;
+  if(keys["2"]) player.weapon=1;
+  if(reloadTimer>0){
+    reloadTimer-=dt;
+    if(reloadTimer<=0) player.ammo=player.maxAmmo;
+  }
+  muzzleFlash=Math.max(0,muzzleFlash-dt);
+  let mx=(keys.d?1:0)-(keys.a?1:0);
+  let my=(keys.s?1:0)-(keys.w?1:0);
+  let ml=Math.hypot(mx,my)||1;
+  const sprint=keys.shift?1.65:1;
+  player.x+=mx/ml*player.speed*sprint;
+  player.y+=my/ml*player.speed*sprint;
+  for(const c of cover){
+    const nx=Math.max(c.x-c.w/2,Math.min(player.x,c.x+c.w/2));
+    const ny=Math.max(c.y-c.h/2,Math.min(player.y,c.y+c.h/2));
+    if(Math.hypot(player.x-nx,player.y-ny)<player.r){
+      player.x-=mx/ml*player.speed*sprint;
+      player.y-=my/ml*player.speed*sprint;
+    }
+  }
+
+  player.angle=Math.atan2(mouse.y-H/2,mouse.x-W/2);
+
+  shootTimer=Math.max(0,shootTimer-dt);
+  if(mouse.down)shoot();
+
+  spawnTimer-=dt;
+  const target=5+wave*2;
+  if(spawnTimer<=0 && enemies.length<target){
+    spawnEnemy();
+    spawnTimer=Math.max(.2,1.0-wave*.035);
+  }
+  if(enemies.length===0 && spawnTimer<0){
+    wave++;
+    spawnTimer=1.2;
+  }
+
+  for(const b of bullets){
+    b.x+=b.vx;b.y+=b.vy;b.life-=dt;
+  }
+  bullets=bullets.filter(b=>b.life>0);
+
+  for(const b of enemyBullets){
+    b.x+=b.vx;b.y+=b.vy;b.life-=dt;
+    if(Math.hypot(b.x-player.x,b.y-player.y)<player.r+6){
+      player.hp-=12;
+      b.life=0;
+      for(let i=0;i<8;i++)particle(player.x,player.y,"#ff4455");
+    }
+  }
+  enemyBullets=enemyBullets.filter(b=>b.life>0);
+
+  for(const e of enemies){
+    const dx=player.x-e.x,dy=player.y-e.y,d=Math.hypot(dx,dy)||1;
+    if(d>120){
+      e.x+=dx/d*e.speed;e.y+=dy/d*e.speed;
+    }else{
+      e.cooldown-=dt;
+      if(e.cooldown<=0){enemyShoot(e);e.cooldown=e.elite?1.0:1.6}
+    }
+    if(d<e.r+player.r){
+      player.hp-=18*dt;
+      e.x-=dx/d*.5;e.y-=dy/d*.5;
+    }
+  }
+
+  for(const b of bullets){
+    for(const e of enemies){
+      if(e.hp>0 && Math.hypot(b.x-e.x,b.y-e.y)<e.r+7){
+        e.hp--;b.life=0;
+        for(let i=0;i<7;i++)particle(e.x,e.y,e.elite?"#c56cff":"#ff8844");
+        if(e.hp<=0)score+=e.elite?30:10;
+        break;
+      }
+    }
+  }
+  enemies=enemies.filter(e=>e.hp>0);
+
+  for(const p of particles){
+    p.x+=p.vx;p.y+=p.vy;p.life-=dt;
+  }
+  particles=particles.filter(p=>p.life>0);
+
+  if(player.hp<=0){
+    running=false;
+    document.getElementById("finalScore").textContent="Score: "+score+" • Wave reached: "+wave;
+    document.getElementById("gameover").style.display="flex";
+  }
+
+  hpBar.style.width=Math.max(0,player.hp)+"%";
+  info.textContent=`Score: ${score} | Wave: ${wave} | Enemies: ${enemies.length} | ${player.weapon===0?"Rifle [1]":"DMR [2]"}`;
+}
+
+function camera(){
+  return {x:player.x,y:player.y};
+}
+
+function worldToScreen(x,y,cam){
+  return {x:W/2+(x-cam.x),y:H/2+(y-cam.y)};
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const cam=camera();
+
+  // Ground
+  ctx.fillStyle="#101925";ctx.fillRect(0,0,W,H);
+
+  // Arena cover
+  for(const c of cover){
+    const p=worldToScreen(c.x,c.y,cam);
+    ctx.fillStyle="#0008";ctx.fillRect(p.x-c.w/2+7,p.y-c.h/2+8,c.w,c.h);
+    ctx.fillStyle="#394b5c";ctx.fillRect(p.x-c.w/2,p.y-c.h/2,c.w,c.h);
+    ctx.strokeStyle="#5e7182";ctx.strokeRect(p.x-c.w/2,p.y-c.h/2,c.w,c.h);
+  }
+  const grid=80;
+  ctx.strokeStyle="#18283a";ctx.lineWidth=1;
+  let ox=((W/2-cam.x)%grid+grid)%grid,oy=((H/2-cam.y)%grid+grid)%grid;
+  for(let x=ox;x<W;x+=grid){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(let y=oy;y<H;y+=grid){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+
+  // World border
+  ctx.strokeStyle="#28435a";ctx.lineWidth=4;ctx.strokeRect(W/2-cam.x-1800,H/2-cam.y-1800,3600,3600);
+
+  // Shadows / enemies
+  for(const e of enemies){
+    const p=worldToScreen(e.x,e.y,cam);
+    ctx.fillStyle="#0008";ctx.beginPath();ctx.ellipse(p.x,p.y+13,22,8,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=e.elite?"#ff9d32":"#a93642";
+    ctx.beginPath();ctx.arc(p.x,p.y,e.r,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#16191e";ctx.fillRect(p.x-10,p.y-8,20,15);
+    // Rogue Helldiver-style helmet visor
+    ctx.fillStyle="#d94b4b";ctx.fillRect(p.x-7,p.y-3,14,4);
+    ctx.fillStyle="#fff";ctx.fillRect(p.x-5,p.y-4,4,4);ctx.fillRect(p.x+2,p.y-4,4,4);
+    ctx.fillStyle="#fff";ctx.font="bold 8px Arial";ctx.textAlign="center";
+    ctx.fillText(e.elite?"ROGUE COMMANDER":"ROGUE HELLDIVER",p.x,p.y-35);
+    ctx.fillStyle="#111";ctx.fillRect(p.x-16,p.y-29,32,5);
+    ctx.fillStyle="#4cff73";ctx.fillRect(p.x-16,p.y-29,32*Math.max(0,e.hp/(e.elite?3:2)),5);
+  }
+
+  // Bullets
+  for(const b of bullets){
+    const p=worldToScreen(b.x,b.y,cam);
+    ctx.fillStyle="#fff3a6";ctx.beginPath();ctx.arc(p.x,p.y,4,0,Math.PI*2);ctx.fill();
+  }
+  for(const b of enemyBullets){
+    const p=worldToScreen(b.x,b.y,cam);
+    ctx.fillStyle="#ff4966";ctx.beginPath();ctx.arc(p.x,p.y,6,0,Math.PI*2);ctx.fill();
+  }
+
+  // Particles
+  for(const p of particles){
+    const s=worldToScreen(p.x,p.y,cam);
+    ctx.globalAlpha=Math.max(0,p.life/.4);ctx.fillStyle=p.color;
+    ctx.fillRect(s.x-2,s.y-2,4,4);
+  }
+  ctx.globalAlpha=1;
+
+  // Player shadow
+  ctx.fillStyle="#0009";ctx.beginPath();ctx.ellipse(W/2,H/2+18,30,11,0,0,Math.PI*2);ctx.fill();
+
+  // Player body
+  ctx.save();ctx.translate(W/2,H/2);ctx.rotate(player.angle);
+  // backpack/body silhouette
+  ctx.fillStyle="#172331";ctx.fillRect(-15,-13,30,28);
+  ctx.fillStyle="#27374a";ctx.beginPath();ctx.arc(0,0,22,0,Math.PI*2);ctx.fill();
+  // Truth Informer armor: blue coat, white helmet, bright "TRUTH" insignia
+  ctx.fillStyle="#2476d8";ctx.beginPath();ctx.arc(0,0,17,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#f2f6ff";ctx.beginPath();ctx.arc(0,-3,10,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#ffd84d";ctx.fillRect(-7,7,14,5);
+  ctx.fillStyle="#142030";ctx.font="bold 5px Arial";ctx.textAlign="center";ctx.fillText("TRUTH",0,11);
+  ctx.fillStyle="#202b38";ctx.fillRect(8,-5,32,10);
+  ctx.fillStyle="#74c7ff";ctx.fillRect(35,-3,9,6);
+  if(muzzleFlash>0){
+    ctx.fillStyle="#ffe27a";ctx.beginPath();ctx.moveTo(46,0);ctx.lineTo(66,-9);ctx.lineTo(60,0);ctx.lineTo(66,9);ctx.closePath();ctx.fill();
+  }
+  ctx.restore();
+
+  // Weapon/ammo HUD
+  ctx.fillStyle="#fff";ctx.font="bold 18px Arial";
+  ctx.fillText(player.weapon===0?"RIFLE":"DMR",W-150,H-55);
+  ctx.font="bold 30px Arial";ctx.fillText(reloadTimer>0?"RELOADING":player.ammo+" / "+player.maxAmmo,W-150,H-22);
+
+  // Minimap
+  const mw=150,mh=105,mx=W-mw-18,my=18;
+  ctx.fillStyle="#071018dd";ctx.fillRect(mx,my,mw,mh);
+  ctx.strokeStyle="#5a7182";ctx.strokeRect(mx,my,mw,mh);
+  const scale=.035;
+  for(const e of enemies){
+    const ex=mx+mw/2+(e.x-player.x)*scale,ey=my+mh/2+(e.y-player.y)*scale;
+    if(ex>mx&&ex<mx+mw&&ey>my&&ey<my+mh){ctx.fillStyle="#ff5252";ctx.fillRect(ex-2,ey-2,4,4)}
+  }
+  ctx.fillStyle="#4da3ff";ctx.fillRect(mx+mw/2-3,my+mh/2-3,6,6);
+
+
+  // Aim reticle
+  ctx.strokeStyle="#fff";ctx.lineWidth=2;ctx.beginPath();
+  ctx.arc(mouse.x,mouse.y,10,0,Math.PI*2);ctx.moveTo(mouse.x-17,mouse.y);ctx.lineTo(mouse.x-6,mouse.y);
+  ctx.moveTo(mouse.x+6,mouse.y);ctx.lineTo(mouse.x+17,mouse.y);
+  ctx.moveTo(mouse.x,mouse.y-17);ctx.lineTo(mouse.x,mouse.y-6);
+  ctx.moveTo(mouse.x,mouse.y+6);ctx.lineTo(mouse.x,mouse.y+17);ctx.stroke();
+}
+
+function loop(t){
+  if(!running)return;
+  const dt=Math.min(.033,(t-last)/1000||.016);last=t;
+  update(dt);draw();
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
